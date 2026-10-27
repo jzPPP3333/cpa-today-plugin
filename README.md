@@ -21,7 +21,7 @@ CLIProxyAPI 的 **Today**（today.ai / todayai.cn）供应商插件。把 Today 
 
 ### 从 Release 安装（推荐）
 
-1. 打开 [Releases](https://github.com/2xz7vmvpv4-art/cpa-today-plugin/releases)，按平台下载归档：
+1. 打开 [Releases](https://github.com/jzPPP3333/cpa-today-plugin/releases)，按平台下载归档：
 
    | 平台 | 归档 |
    | --- | --- |

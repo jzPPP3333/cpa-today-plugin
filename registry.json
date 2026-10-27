@@ -6,8 +6,8 @@
       "name": "Today",
       "description": "把 today.ai / todayai.cn 的私有协议接入 CLIProxyAPI：auth / model / executor / quota / management 五类能力。支持粘贴 Cookie 与邮箱验证码两种登录方式，模型清单按账号套餐实时探测，出站可指定独立代理。",
       "author": "cpa-today-plugin",
-      "repository": "https://github.com/2xz7vmvpv4-art/cpa-today-plugin",
-      "homepage": "https://github.com/2xz7vmvpv4-art/cpa-today-plugin",
+      "repository": "https://github.com/jzPPP3333/cpa-today-plugin",
+      "homepage": "https://github.com/jzPPP3333/cpa-today-plugin",
       "license": "MIT",
       "tags": [
         "Provider",

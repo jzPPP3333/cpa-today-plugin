@@ -29,7 +29,7 @@ const (
 	DisplayName    = "Today"
 	ProviderKey    = "today"
 	PluginAuthor   = "cpa-today-plugin"
-	PluginRepo     = "https://github.com/local/cpa-today-plugin"
+	PluginRepo     = "https://github.com/jzPPP3333/cpa-today-plugin"
 	DefaultVersion = "0.1.0"
 
 	FormatChatCompletions = "chat-completions"
