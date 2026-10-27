@@ -28,7 +28,7 @@ const (
 	PluginID       = "today"
 	DisplayName    = "Today"
 	ProviderKey    = "today"
-	PluginAuthor   = "cpa-today-plugin"
+	PluginAuthor   = "jzPPP3333"
 	PluginRepo     = "https://github.com/jzPPP3333/cpa-today-plugin"
 	DefaultVersion = "0.1.0"
 
@@ -161,6 +161,7 @@ func (a *App) Registration() registration {
 			Version:          a.version,
 			Author:           PluginAuthor,
 			GitHubRepository: PluginRepo,
+			ConfigFields:     configFields(),
 		},
 		Capabilities: registrationCapabilities{
 			ModelProvider:         true,
@@ -258,4 +259,53 @@ func (a *App) ProbedModels() []string {
 		out = append(out, m.ID)
 	}
 	return out
+}
+
+// configFields 声明插件自有配置字段，供管理端渲染配置表单。
+//
+// 官方规范要求这里列出 plugins.configs.today 下可用的键；宿主用它渲染
+// 管理界面，但不会替插件校验——真正的校验仍在 DecodeConfig 里。
+func configFields() []pluginapi.ConfigField {
+	return []pluginapi.ConfigField{
+		{
+			Name:        "timeout_seconds",
+			Type:        pluginapi.ConfigFieldTypeInteger,
+			Description: "等待上游回复的总时长（秒）。默认 240。",
+		},
+		{
+			Name:        "poll_interval_ms",
+			Type:        pluginapi.ConfigFieldTypeInteger,
+			Description: "轮询间隔起点（毫秒）。默认 700，之后自适应退避到 1s。",
+		},
+		{
+			Name:        "default_model",
+			Type:        pluginapi.ConfigFieldTypeString,
+			Description: "请求未带 model 时使用的模型 ID。默认 deepseek-v4.1-flash。",
+		},
+		{
+			Name:        "context_turns",
+			Type:        pluginapi.ConfigFieldTypeInteger,
+			Description: "回传给上游的历史轮数；0 表示只发当前一轮。",
+		},
+		{
+			Name:        "reasoning_hint",
+			Type:        pluginapi.ConfigFieldTypeString,
+			Description: "追加到提示词末尾的文本。上游不返回 reasoning，可借此在正文里要求写出推理。",
+		},
+		{
+			Name:        "proxy_url",
+			Type:        pluginapi.ConfigFieldTypeString,
+			Description: "插件出站代理。国内直连 todayai.cn 约 11s，走代理约 1s，强烈建议配置。",
+		},
+		{
+			Name:        "app_base",
+			Type:        pluginapi.ConfigFieldTypeString,
+			Description: "覆盖 https://today.ai。指向自建 mock 或中转时使用。",
+		},
+		{
+			Name:        "api_base",
+			Type:        pluginapi.ConfigFieldTypeString,
+			Description: "覆盖 https://api.today.ai。指向自建 mock 或中转时使用。",
+		},
+	}
 }
