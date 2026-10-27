@@ -1,0 +1,235 @@
+name: CI
+
+# main 分支与 PR 上跑检查 + 构建；打 v* tag 时额外发布 Release（含各平台动态库）。
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 同一 ref 上只保留最新一次运行；tag 构建不取消（要出 Release）。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  test:
+    name: 测试（gofmt / vet / build）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          # 本项目没有第三方依赖（无 go.sum），关掉模块缓存以免 setup-go 报警告。
+          cache: false
+
+      - name: gofmt
+        shell: bash
+        run: |
+          set -euo pipefail
+          # cpasdk/ 是与宿主 ABI 对齐的 vendored 副本，保持与上游一致的排版，不参与格式检查。
+          unformatted=$(gofmt -l . | grep -v '^cpasdk/' || true)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未通过 gofmt："
+            echo "$unformatted"
+            exit 1
+          fi
+          echo "gofmt clean"
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./... -count=1 -timeout 300s
+
+      - name: 构建校验（本机平台）
+        run: CGO_ENABLED=1 go build -buildmode=c-shared -o /tmp/today-ci.so .
+
+  build:
+    name: 构建 ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    # darwin/amd64 属于尽力而为：失败不阻塞其他平台出产物与 Release。
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  goos: linux,   goarch: amd64, ext: so,    cc: gcc,                   experimental: false }
+          - { os: ubuntu-latest,  goos: linux,   goarch: arm64, ext: so,    cc: aarch64-linux-gnu-gcc, experimental: false }
+          - { os: macos-14,       goos: darwin,  goarch: arm64, ext: dylib, cc: clang,                 experimental: false }
+          - { os: macos-14,       goos: darwin,  goarch: amd64, ext: dylib, cc: 'clang -arch x86_64', experimental: true }
+          - { os: windows-latest, goos: windows, goarch: amd64, ext: dll,   cc: gcc,                   experimental: false }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: false
+
+      - name: 安装交叉编译器（linux/arm64）
+        if: matrix.cc == 'aarch64-linux-gnu-gcc'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: 环境信息
+        shell: bash
+        run: |
+          go version
+          ${{ matrix.cc }} --version | head -1
+
+      - name: 构建 c-shared 插件
+        shell: bash
+        env:
+          CGO_ENABLED: '1'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CC: ${{ matrix.cc }}
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          go build -buildmode=c-shared -trimpath \
+            -ldflags "-s -w -X main.pluginVersion=${VERSION}" \
+            -o "dist/today-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.ext }}" .
+          ls -la dist
+
+      - name: 校验导出符号
+        shell: bash
+        if: matrix.goos != 'darwin'
+        run: |
+          set -euo pipefail
+          lib="dist/today-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.ext }}"
+          case "${{ matrix.goos }}" in
+            linux)
+              nm -D --defined-only "$lib" | grep -E 'cliproxy_plugin_init|cliproxyPluginCall|cliproxyPluginFree|cliproxyPluginShutdown'
+              ;;
+            windows)
+              # windows runner 有 objdump（MSYS），用它读导出表
+              objdump -p "$lib" | grep -A10 'Ordinal/Name Pointer' | grep cliproxy
+              ;;
+          esac
+          echo "exports ok"
+
+      # 插件商店安装要求归档名 {id}_{version}_{goos}_{goarch}.zip，
+      # 且 zip 根目录下只能有 {id}{ext} 一个动态库；见 scripts/packstore。
+      - name: 打包插件商店归档（仅 tag）
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          VERSION_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # 归档名里的版本号是 tag 去掉前导 v（宿主按同样规则从 tag 推导）。
+          go run ./scripts/packstore \
+            -lib "dist/today-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.ext }}" \
+            -id today \
+            -version "${VERSION_TAG#v}" \
+            -goos ${{ matrix.goos }} \
+            -goarch ${{ matrix.goarch }} \
+            -out-dir dist
+
+      - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: today-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/today_*_${{ matrix.goos }}_${{ matrix.goarch }}.zip
+          if-no-files-found: error
+
+      # 非 tag 运行也留一份裸动态库，方便排障时直接下载。
+      - uses: actions/upload-artifact@v4
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        with:
+          name: today-lib-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/today-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.ext }}
+          if-no-files-found: error
+
+  release:
+    name: 发布 Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # gh 需要 git 仓库上下文（否则报 "not a git repository"）；
+      # fetch-depth: 0 是为了读到 tag 注解（Release 正文的「本版要点」）。
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 下载全部平台产物
+        uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: false
+
+      - name: 生成插件商店校验和（checksums.txt）
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 必须在汇总阶段生成：矩阵里每个平台各写一份同名文件会互相覆盖，
+          # 导致部分 zip 的校验和丢失、宿主安装时直接报 checksum not found。
+          go run ./scripts/packstore -checksums-dir assets
+
+      - name: 生成 Release 正文（安装说明 + tag 注解）
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # actions/checkout 按 commit 检出 tag（fetch-tags 默认 false），本地的
+          # refs/tags/<tag> 是**轻量标签**：%(contents) 只会拿到 commit 标题。
+          git fetch --force --no-tags origin "+refs/tags/${TAG}:refs/tags/${TAG}"
+          if [ "$(git cat-file -t "refs/tags/${TAG}")" != "tag" ]; then
+            echo "::warning::${TAG} 不是注解标签，本版要点只会有 commit 标题"
+          fi
+          {
+            echo '## 手动安装'
+            echo
+            echo '下载对应平台的 `today_<版本>_<goos>_<goarch>.zip`，解压后把其中的'
+            echo '`today` 动态库放进 CPA 的 `plugins/` 目录。'
+            echo '归档里用的已经是宿主要求的 `today{ext}` 文件名，解压后无需改名。'
+            echo
+            echo '| 平台 | 下载归档 |'
+            echo '| --- | --- |'
+            echo '| Linux x86_64 | `today_<版本>_linux_amd64.zip` |'
+            echo '| Linux arm64 | `today_<版本>_linux_arm64.zip` |'
+            echo '| macOS Apple Silicon | `today_<版本>_darwin_arm64.zip` |'
+            echo '| macOS Intel | `today_<版本>_darwin_amd64.zip` |'
+            echo '| Windows x64 | `today_<版本>_windows_amd64.zip` |'
+            echo
+            echo '`checksums.txt` 可用于核对归档完整性；账号登录与配置见仓库 README。'
+            echo
+            echo '## 本版要点'
+            echo
+            git tag -l --format='%(contents)' "$TAG" | sed -e '1{' -e '/^$/d' -e '}'
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: 创建 Release 并上传产物
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --notes-file release-notes.md \
+            --generate-notes \
+            --verify-tag \
+            assets/*

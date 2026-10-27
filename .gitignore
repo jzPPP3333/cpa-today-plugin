@@ -1,0 +1,15 @@
+# 构建产物
+dist/
+*.dll
+*.so
+*.dylib
+*.h
+
+# 测试临时文件
+testtools/*.log
+*.tmp
+
+# 编辑器
+.idea/
+.vscode/
+.DS_Store
