@@ -39,10 +39,31 @@ func (r *httpResponse) UnmarshalJSON(data []byte) error {
 				return fmt.Errorf("decode status: %w", errDecode)
 			}
 		case "headers":
-			_ = json.Unmarshal(value, &r.Headers)
+			r.Headers = decodeHTTPHeader(value)
 		case "body":
 			_ = json.Unmarshal(value, &r.Body)
 		}
+	}
+	return nil
+}
+
+func decodeHTTPHeader(raw json.RawMessage) http.Header {
+	var multi map[string][]string
+	if err := json.Unmarshal(raw, &multi); err == nil && multi != nil {
+		out := make(http.Header, len(multi))
+		for k, vals := range multi {
+			ck := http.CanonicalHeaderKey(k)
+			out[ck] = append(out[ck], vals...)
+		}
+		return out
+	}
+	var single map[string]string
+	if err := json.Unmarshal(raw, &single); err == nil && single != nil {
+		out := make(http.Header, len(single))
+		for k, val := range single {
+			out.Add(k, val)
+		}
+		return out
 	}
 	return nil
 }
@@ -87,6 +108,9 @@ func Do(ctx context.Context, req *http.Request) (*Response, error) {
 
 // DoJSON 以 JSON 方式发起请求并返回原始响应。
 func DoJSON(ctx context.Context, method, url string, headers map[string]string, body any) (*Response, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var reader io.Reader
 	if body != nil {
 		encoded, errMarshal := json.Marshal(body)

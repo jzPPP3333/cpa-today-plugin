@@ -114,6 +114,7 @@ type Client struct {
 	AppBase    string
 	APIBase    string
 	AuthBase   string
+	tokenMu    sync.Mutex
 	jwt        string
 	jwtExpires time.Time
 
@@ -156,31 +157,42 @@ func RandomID() string {
 
 func (c *Client) cookieHeader() string {
 	if strings.TrimSpace(c.Cred.CookieRaw) != "" {
-		return strings.TrimSpace(c.Cred.CookieRaw)
+		return NormalizeCookieHeader(c.Cred.CookieRaw)
 	}
 	if strings.TrimSpace(c.Cred.Session) == "" {
 		return ""
 	}
-	return "__Secure-better-auth.session_token=" + strings.TrimSpace(c.Cred.Session)
+	return formatCookiePair(SessionCookieName, c.Cred.Session)
+}
+
+func (c *Client) invalidateToken() {
+	c.tokenMu.Lock()
+	c.jwt = ""
+	c.jwtExpires = time.Time{}
+	c.tokenMu.Unlock()
 }
 
 // Token 换出可用的 API JWT（带缓存，提前 60s 续期）。
 func (c *Client) Token(ctx context.Context) (string, error) {
+	c.tokenMu.Lock()
 	if c.jwt != "" && time.Now().Before(c.jwtExpires.Add(-60*time.Second)) {
-		return c.jwt, nil
+		cached := c.jwt
+		c.tokenMu.Unlock()
+		return cached, nil
 	}
+	c.tokenMu.Unlock()
+
 	cookie := c.cookieHeader()
 	if cookie == "" {
 		return "", core.NewPluginError("missing_credential", "today credential has no session cookie", http.StatusUnauthorized)
 	}
 	body := map[string]any{"audience": c.APIBase, "expiresIn": 3600}
-	req, errNew := http.NewRequestWithContext(ctx, http.MethodPost, c.AppBase+"/api/token", nil)
-	if errNew != nil {
-		return "", errNew
+	headers := map[string]string{
+		"Cookie":  cookie,
+		"Origin":  c.AppBase,
+		"Referer": c.AppBase + "/",
 	}
-	resp, errDo := hostbridge.DoJSON(ctx, http.MethodPost, c.AppBase+"/api/token",
-		map[string]string{"Cookie": cookie}, body)
-	_ = req
+	resp, errDo := hostbridge.DoJSON(ctx, http.MethodPost, c.AppBase+"/api/token", headers, body)
 	if errDo != nil {
 		return "", &core.UpstreamError{Kind: "network", Msg: errDo.Error()}
 	}
@@ -201,9 +213,11 @@ func (c *Client) Token(ctx context.Context) (string, error) {
 	if ttl <= 0 {
 		ttl = 3600
 	}
+	c.tokenMu.Lock()
 	c.jwt = parsed.Token
 	c.jwtExpires = time.Now().Add(time.Duration(ttl) * time.Second)
-	return c.jwt, nil
+	c.tokenMu.Unlock()
+	return parsed.Token, nil
 }
 
 func (c *Client) api(ctx context.Context, method, path string, body any) (*hostbridge.Response, error) {
@@ -218,7 +232,7 @@ func (c *Client) api(ctx context.Context, method, path string, body any) (*hostb
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
 		// JWT 过期或凭证失效：强制重换一次。
-		c.jwt = ""
+		c.invalidateToken()
 		token, errRetry := c.Token(ctx)
 		if errRetry != nil {
 			return nil, errRetry
