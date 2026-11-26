@@ -1,6 +1,7 @@
 package hostbridge
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -114,5 +115,18 @@ func TestResetForInitReopensGate(t *testing.T) {
 	})
 	if _, err := Call("", "host.auth.list", map[string]any{}); err != nil {
 		t.Fatalf("callback after ResetForInit failed: %v", err)
+	}
+}
+
+func TestDoJSONCanonicalizesLowercaseHeaders(t *testing.T) {
+	withFake(t, func(callbackID, method string, payload any) (json.RawMessage, error) {
+		return json.RawMessage(`{"status_code":200,"headers":{"set-cookie":["a=1; Path=/"],"content-type":["application/json"]}}`), nil
+	})
+	resp, err := DoJSON(context.Background(), "POST", "https://today.ai/api/token", nil, map[string]any{"a": 1})
+	if err != nil {
+		t.Fatalf("DoJSON failed: %v", err)
+	}
+	if got := resp.Headers.Values("Set-Cookie"); len(got) != 1 || got[0] != "a=1; Path=/" {
+		t.Fatalf("Set-Cookie = %v", got)
 	}
 }

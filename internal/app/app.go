@@ -30,7 +30,7 @@ const (
 	ProviderKey    = "today"
 	PluginAuthor   = "jzPPP3333"
 	PluginRepo     = "https://github.com/jzPPP3333/cpa-today-plugin"
-	DefaultVersion = "0.1.0"
+	DefaultVersion = "0.1.2"
 
 	FormatChatCompletions = "chat-completions"
 )

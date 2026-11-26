@@ -53,18 +53,19 @@ pre{background:#0b0d10;border:1px solid var(--line);border-radius:7px;padding:12
   <label>区域</label>
   <select id="realm"><option value="global">国际版 today.ai</option><option value="cn">国内版 todayai.cn</option></select>
   <label>方式一：粘贴浏览器 Cookie（推荐）</label>
-  <textarea id="cookie" placeholder="__Secure-better-auth.session_token=xxxxxxxx  或整段 Cookie 头"></textarea>
-  <p class="hint">浏览器登录 today.ai → F12 → Application → Cookies → today.ai → 复制 <code>__Secure-better-auth.session_token</code> 的值。</p>
+  <textarea id="cookie" placeholder="__Secure-better-auth.session_token=xxxxxxxx、裸值、整段 Cookie 头或 Copy as cURL"></textarea>
+  <p class="hint" id="cookieHint">浏览器登录 today.ai → F12 → Application → Cookies → 复制 <code>__Secure-better-auth.session_token</code> 的值（支持 URL 解码值、整段 Cookie 头或 cURL，自动识别国际版/国内版）。</p>
   <button id="btnCookie">用 Cookie 登录</button>
 
   <hr style="border:0;border-top:1px solid var(--line);margin:22px 0">
-  <label>方式二：邮箱验证码</label>
+  <label>方式二：邮箱验证码（仅国际版 today.ai）</label>
   <div class="row">
     <div><input id="email" placeholder="you@example.com"></div>
     <div style="flex:0 0 150px"><button id="btnSendOtp" style="margin-top:0">发送验证码</button></div>
   </div>
   <label>验证码</label>
   <input id="otp" placeholder="6 位验证码">
+  <p class="hint" id="otpHint">国内版 todayai.cn 上游已停用邮箱登录，请使用上方「粘贴浏览器 Cookie」。</p>
   <button id="btnOtp">用验证码登录</button>
 </div>
 
@@ -91,10 +92,13 @@ const out = (el, v) => { el.textContent = typeof v === 'string' ? v : JSON.strin
 const statusEl = document.getElementById('status');
 const accountsEl = document.getElementById('accounts');
 const chatOut = document.getElementById('chatOut');
+const realmEl = document.getElementById('realm');
+const cookieHintEl = document.getElementById('cookieHint');
 
 const bannerEl = document.getElementById('banner');
 function showError(msg) { bannerEl.textContent = msg; bannerEl.style.display='block'; }
 function clearError() { bannerEl.style.display='none'; bannerEl.textContent=''; }
+function errText(data) { return (data && typeof data === 'object' && data.error) ? data.error : (typeof data === 'string' ? data : JSON.stringify(data)); }
 
 function secret() { return localStorage.getItem('cpa-mgmt-secret') || ''; }
 
@@ -113,8 +117,10 @@ async function api(path, opts) {
     showError('管理密钥不正确（HTTP ' + r.status + '）。请在上方「管理密钥」填入 CPA 的 management secret-key。');
   } else if (r.status === 404) {
     showError('接口不存在（HTTP 404）：' + BASE + path + ' | 插件可能未加载，检查 CPA 日志。');
+  } else if (r.status >= 400 && r.status < 500) {
+    showError(errText(data));
   } else if (r.status >= 500) {
-    showError('上游/插件错误（HTTP ' + r.status + '）：' + (typeof data === 'string' ? data : JSON.stringify(data)));
+    showError('上游/插件错误（HTTP ' + r.status + '）：' + errText(data));
   } else if (r.status >= 200 && r.status < 300) {
     clearError();
   }
@@ -126,6 +132,12 @@ function saveSecret() {
   localStorage.setItem('cpa-mgmt-secret', v);
   loadStatus(); loadAccounts();
 }
+
+function syncRealmHint() {
+  const site = realmEl.value === 'cn' ? 'todayai.cn' : 'today.ai';
+  cookieHintEl.innerHTML = '浏览器登录 ' + site + ' → F12 → Application → Cookies → 复制 <code>__Secure-better-auth.session_token</code> 的值（支持 URL 解码值、整段 Cookie 头或 cURL，自动识别国际版/国内版）。';
+}
+realmEl.onchange = syncRealmHint;
 
 async function loadStatus() {
   const r = await api('/status');
@@ -150,10 +162,14 @@ document.getElementById('btnCookie').onclick = async () => {
   const cookie = document.getElementById('cookie').value.trim();
   if (!cookie) return alert('请粘贴 Cookie');
   const btn = document.getElementById('btnCookie'); btn.disabled = true;
-  const r = await api('/accounts/login', {method:'POST', body: JSON.stringify({cookie, realm: document.getElementById('realm').value})});
+  const r = await api('/accounts/login', {method:'POST', body: JSON.stringify({cookie, realm: realmEl.value})});
   btn.disabled = false;
   if (r.status === 401 || r.status === 403) return alert('管理密钥不正确（401/403）。请在上方「管理密钥」里填入 CPA 的 management secret-key。');
-  alert(r.status + ' ' + JSON.stringify(r.data, null, 2));
+  if (r.status === 200 && r.data && r.data.ok) {
+    alert('登录成功：' + (r.data.label || r.data.file) + '（' + (r.data.realm === 'cn' ? '国内版 todayai.cn' : '国际版 today.ai') + '）');
+  } else {
+    alert(errText(r.data));
+  }
   loadAccounts();
 };
 
@@ -161,9 +177,13 @@ document.getElementById('btnSendOtp').onclick = async () => {
   const email = document.getElementById('email').value.trim();
   if (!email) return alert('请填邮箱');
   const btn = document.getElementById('btnSendOtp'); btn.disabled = true;
-  const r = await api('/accounts/login', {method:'POST', body: JSON.stringify({email, realm: document.getElementById('realm').value})});
+  const r = await api('/accounts/login', {method:'POST', body: JSON.stringify({email, realm: realmEl.value})});
   btn.disabled = false;
-  alert(JSON.stringify(r.data));
+  if (r.status === 200 && r.data && r.data.ok) {
+    alert('验证码已发送，请查收邮件');
+  } else {
+    alert(errText(r.data));
+  }
 };
 
 document.getElementById('btnOtp').onclick = async () => {
@@ -171,9 +191,13 @@ document.getElementById('btnOtp').onclick = async () => {
   const otp = document.getElementById('otp').value.trim();
   if (!email || !otp) return alert('邮箱和验证码都要填');
   const btn = document.getElementById('btnOtp'); btn.disabled = true;
-  const r = await api('/accounts/login', {method:'POST', body: JSON.stringify({email, otp, realm: document.getElementById('realm').value})});
+  const r = await api('/accounts/login', {method:'POST', body: JSON.stringify({email, otp, realm: realmEl.value})});
   btn.disabled = false;
-  alert(JSON.stringify(r.data));
+  if (r.status === 200 && r.data && r.data.ok) {
+    alert('登录成功：' + (r.data.label || r.data.file));
+  } else {
+    alert(errText(r.data));
+  }
   loadAccounts();
 };
 
@@ -190,6 +214,7 @@ document.getElementById('btnChat').onclick = async () => {
 
 document.getElementById('btnSecret').onclick = saveSecret;
 document.getElementById('secret').value = localStorage.getItem('cpa-mgmt-secret') || '';
+syncRealmHint();
 loadStatus(); loadAccounts();
 </script>
 </body></html>`

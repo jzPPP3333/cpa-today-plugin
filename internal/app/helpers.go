@@ -56,8 +56,11 @@ var clientPool = struct {
 }{items: map[string]*today.Client{}}
 
 // clientFor 返回该凭证的长生命周期客户端。
+// key 纳入 realm 与 cookie 内容，确保重登或手改凭证文件后立即切换，不复用旧缓存。
 func clientFor(cred today.Credential, cfg Config) *today.Client {
-	key := cred.UID + "|" + cfg.AppBase + "|" + cfg.APIBase
+	key := strings.Join([]string{
+		cred.UID, cred.Realm, cred.CookieRaw, cred.Session, cfg.AppBase, cfg.APIBase,
+	}, "|")
 	clientPool.Lock()
 	defer clientPool.Unlock()
 	if c, ok := clientPool.items[key]; ok {
@@ -66,4 +69,18 @@ func clientFor(cred today.Credential, cfg Config) *today.Client {
 	c := today.NewClientWithBase(cred, cfg.AppBase, cfg.APIBase)
 	clientPool.items[key] = c
 	return c
+}
+
+func normalizeRealm(realm string) string {
+	if strings.EqualFold(strings.TrimSpace(realm), "cn") {
+		return "cn"
+	}
+	return "global"
+}
+
+func alternateRealm(realm string) string {
+	if normalizeRealm(realm) == "cn" {
+		return "global"
+	}
+	return "cn"
 }

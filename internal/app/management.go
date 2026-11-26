@@ -5,7 +5,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -174,31 +173,19 @@ func (a *App) handleConsoleLogin(rpc managementRPC) ([]byte, error) {
 			return core.OKEnvelope(jsonResponse(http.StatusBadRequest, map[string]any{"error": "invalid JSON: " + errUnmarshal.Error()}))
 		}
 	}
-	realm := strings.ToLower(strings.TrimSpace(body.Realm))
-	if realm != "cn" {
-		realm = "global"
-	}
+	realm := normalizeRealm(body.Realm)
 
 	if strings.TrimSpace(body.Cookie) == "" && strings.TrimSpace(body.Email) != "" && strings.TrimSpace(body.OTP) == "" {
 		// 第一阶段：发验证码。
-		_, _, authBase := today.RealmBase(realm)
-		resp, errDo := hostbridge.DoJSON(context.Background(), http.MethodPost,
-			authBase+"/api/auth/email-otp/send-verification-otp",
-			nil, map[string]any{"email": strings.TrimSpace(body.Email), "type": "sign-in"})
-		if errDo != nil {
-			return core.OKEnvelope(jsonResponse(http.StatusBadGateway, map[string]any{"error": errDo.Error()}))
-		}
-		if resp.StatusCode != http.StatusOK {
-			return core.OKEnvelope(jsonResponse(http.StatusBadGateway, map[string]any{
-				"error": fmt.Sprintf("send OTP failed: HTTP %d %.200s", resp.StatusCode, resp.Body),
-			}))
+		if errSend := sendEmailOTP(context.Background(), body.Email, realm); errSend != nil {
+			return core.OKEnvelope(jsonResponse(managementErrorStatus(errSend), map[string]any{"error": errSend.Error()}))
 		}
 		return core.OKEnvelope(jsonResponse(http.StatusOK, map[string]any{"ok": true, "stage": "otp_sent"}))
 	}
 
-	cred, errCred := loginByCookieOrOTP(body.Cookie, body.Email, body.OTP, realm)
+	cred, errCred := a.authenticateByCookieOrOTP(context.Background(), body.Cookie, body.Email, body.OTP, realm)
 	if errCred != nil {
-		return core.OKEnvelope(jsonResponse(http.StatusBadGateway, map[string]any{"error": errCred.Error()}))
+		return core.OKEnvelope(jsonResponse(managementErrorStatus(errCred), map[string]any{"error": errCred.Error()}))
 	}
 	payload, _ := json.Marshal(cred)
 	fileName := cred.UID + ".json"
@@ -210,49 +197,29 @@ func (a *App) handleConsoleLogin(rpc managementRPC) ([]byte, error) {
 	}))
 }
 
-func loginByCookieOrOTP(cookie, email, otp, realm string) (today.Credential, error) {
-	cred := today.Credential{Provider: ProviderKey, Realm: realm, Type: ProviderKey}
-	if strings.TrimSpace(cookie) != "" {
-		cred.CookieRaw = normalizeCookie(cookie)
-	} else if strings.TrimSpace(email) != "" && strings.TrimSpace(otp) != "" {
-		_, _, authBase := today.RealmBase(realm)
-		resp, errDo := hostbridge.DoJSON(context.Background(), http.MethodPost,
-			authBase+"/api/auth/sign-in/email-otp", nil,
-			map[string]any{"email": strings.TrimSpace(email), "otp": strings.TrimSpace(otp)})
-		if errDo != nil {
-			return cred, errDo
-		}
-		if resp.StatusCode != http.StatusOK {
-			return cred, fmt.Errorf("邮箱验证码登录失败: HTTP %d %.200s", resp.StatusCode, resp.Body)
-		}
-		header := cookiesFromResponse(resp.Headers)
-		if header == "" {
-			return cred, fmt.Errorf("登录成功但未下发 session cookie")
-		}
-		cred.CookieRaw = header
-	} else {
-		return cred, fmt.Errorf("需要 cookie 或 email+otp")
+// managementErrorStatus 将插件错误映射为管理接口状态码。
+//
+// 注意：/v0/management/* 的 401/403 由宿主保留给 management secret-key 鉴权失败，
+// 因此上游拒绝用户提交的 Cookie / OTP 一律映射为 400（提交参数无效），仅在真实上游网络或 5xx 故障时返回 502。
+func managementErrorStatus(err error) int {
+	converted := core.ToPluginError(err)
+	pe, ok := converted.(*core.PluginError)
+	if !ok {
+		return http.StatusBadGateway
 	}
-
-	client := today.NewClient(cred)
-	ctx, cancel := context.WithTimeout(context.Background(), hostbridge.DefaultTimeout)
-	defer cancel()
-	if _, errToken := client.Token(ctx); errToken != nil {
-		return cred, fmt.Errorf("凭证验证失败: %w", errToken)
-	}
-	if me, errMe := client.Me(ctx); errMe == nil {
-		if emailValue, okEmail := me["email"].(string); okEmail && emailValue != "" {
-			cred.Label = "Today-" + emailValue
+	switch pe.HTTPStatus {
+	case http.StatusTooManyRequests:
+		return http.StatusTooManyRequests
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusUnprocessableEntity:
+		return http.StatusBadRequest
+	case http.StatusPaymentRequired:
+		return http.StatusPaymentRequired
+	default:
+		if pe.HTTPStatus >= 500 {
+			return http.StatusBadGateway
 		}
-		if id, okID := me["id"].(string); okID {
-			cred.UserID = id
-		}
+		return http.StatusBadRequest
 	}
-	cred.UID = credentialUID("", cred.Session, cred.CookieRaw)
-	if cred.Label == "" {
-		cred.Label = cred.UID
-	}
-	return cred, nil
 }
 
 func (a *App) handleConsoleDelete(rpc managementRPC) ([]byte, error) {
@@ -284,23 +251,24 @@ func (a *App) handleConsoleChat(rpc managementRPC) ([]byte, error) {
 	if errCred != nil {
 		return core.OKEnvelope(jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": errCred.Error()}))
 	}
+	cfg := a.Config()
 	model, okModel := today.ModelByID(StripModelPrefix(body.Model))
 	if !okModel {
-		model, _ = today.ModelByID(StripModelPrefix(a.Config().DefaultModel))
+		model, _ = today.ModelByID(StripModelPrefix(cfg.DefaultModel))
 	}
-	client := today.NewClient(cred)
+	client := clientFor(cred, cfg)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*60*1e9)
 	defer cancel()
 	if errModel := ensureModel(ctx, client, model); errModel != nil {
-		return core.OKEnvelope(jsonResponse(http.StatusBadGateway, map[string]any{"error": errModel.Error()}))
+		return core.OKEnvelope(jsonResponse(managementErrorStatus(errModel), map[string]any{"error": errModel.Error()}))
 	}
 	threadID, errSend := client.Send(ctx, body.Prompt, "")
 	if errSend != nil {
-		return core.OKEnvelope(jsonResponse(http.StatusBadGateway, map[string]any{"error": errSend.Error()}))
+		return core.OKEnvelope(jsonResponse(managementErrorStatus(errSend), map[string]any{"error": errSend.Error()}))
 	}
 	reply, errReply := client.Reply(ctx, threadID, 3*60*1e9, nil)
 	if errReply != nil {
-		return core.OKEnvelope(jsonResponse(http.StatusBadGateway, map[string]any{"error": errReply.Error()}))
+		return core.OKEnvelope(jsonResponse(managementErrorStatus(errReply), map[string]any{"error": errReply.Error()}))
 	}
 	return core.OKEnvelope(jsonResponse(http.StatusOK, map[string]any{
 		"ok": true, "model": PublicModelID(model.ID), "reply": reply, "thread_id": threadID,

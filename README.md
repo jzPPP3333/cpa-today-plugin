@@ -107,15 +107,15 @@ http://<CPA地址>:8317/v0/resource/plugins/today/console
 **方式一 · 粘贴 Cookie（推荐）**
 
 浏览器登录 https://today.ai 或 https://todayai.cn → F12 → Application → Cookies → 复制
-`__Secure-better-auth.session_token` 的值（或整段 `Cookie:` 头）粘贴提交。
+`__Secure-better-auth.session_token` 的值（支持 URL 解码值、整行复制、整段 `Cookie:` 头或 Network 面板的 `Copy as cURL`）粘贴提交。
 
 插件会立即用这份 Cookie 换 JWT 验证，成功后才写入凭证文件。
 
-> 国内账号（`todayai.cn`）与国际账号（`today.ai`）的 Cookie 不通用，页面上的「区域」要选对。
+> 国内账号（`todayai.cn`）与国际账号（`today.ai`）的 Cookie 不通用；粘贴 Cookie 登录时若选错区域，插件会自动尝试另一侧站点并修正区域。
 
-**方式二 · 邮箱验证码**
+**方式二 · 邮箱验证码（仅国际版 `today.ai`）**
 
-填邮箱 → 发送验证码 → 填验证码提交。走 `auth.todayai.cn` / `auth.today.ai` 的 `email-otp` 接口。
+填邮箱 → 发送验证码 → 填验证码提交。走 `auth.today.ai` 的 `email-otp` 接口（国内版 `todayai.cn` 上游已停用邮箱登录，请使用方式一粘贴 Cookie）。
 
 ## 调用
 
